@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Port Terminal Architect Pro | Spatial Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <style>
+        :root {
+            --bg-deep: #020617;
+            --panel-bg: #0f172a;
+            --accent-blue: #38bdf8;
+            --accent-emerald: #10b981;
+            --border-muted: #1e293b;
+        }
+        body { background-color: var(--bg-deep); color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        .grid-bg { 
+            background-color: var(--bg-deep);
+            background-image: 
+                linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+        .custom-scroll::-webkit-scrollbar { width: 4px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        
+        .berth-draw { fill: rgba(56, 189, 248, 0.1); stroke: var(--accent-blue); stroke-width: 2; cursor: pointer; }
+        .land-draw { fill: #1e293b; stroke: #334155; stroke-width: 1.5; cursor: pointer; }
+        .crane-sts { fill: #f59e0b; stroke: #78350f; stroke-width: 1; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); cursor: move; }
+        .vessel-draw { fill: rgba(16, 185, 129, 0.2); stroke: var(--accent-emerald); stroke-width: 2; cursor: move; }
+        
+        .selected { stroke: #ffffff !important; stroke-width: 3 !important; filter: drop-shadow(0 0 15px rgba(56, 189, 248, 0.6)); }
+        .glass { background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(12px); border: 1px solid var(--border-muted); }
+        .tool-active { background: rgba(56, 189, 248, 0.2); border-color: var(--accent-blue); color: var(--accent-blue); }
+        
+        .input-group label { display: block; font-size: 8px; font-weight: 800; color: #64748b; text-transform: uppercase; margin-bottom: 4px; }
+        .input-field { width: 100%; background: #020617; border: 1px solid #1e293b; padding: 6px 10px; border-radius: 6px; font-size: 11px; color: white; outline: none; transition: border-color 0.2s; }
+        .input-field:focus { border-color: var(--accent-blue); }
+        .section-header { font-size: 10px; font-weight: 900; color: var(--accent-blue); text-transform: uppercase; letter-spacing: 0.1em; border-bottom: 1px solid #1e293b; padding-bottom: 4px; margin-top: 16px; margin-bottom: 12px; }
+    </style>
+</head>
+<body class="overflow-hidden select-none">
+
+    <div class="flex h-screen w-full">
+        <!-- Sidebar -->
+        <aside class="w-80 glass flex flex-col z-30 shadow-2xl">
+            <div class="p-6 border-b border-slate-800">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 bg-sky-600 rounded-xl flex items-center justify-center shadow-lg shadow-sky-900/40">
+                        <i class="ph-fill ph-anchor text-white text-xl"></i>
+                    </div>
+                    <div>
+                        <h1 class="font-black text-xs tracking-widest uppercase text-white">Port Engine</h1>
+                        <p class="text-[9px] text-sky-400 font-bold uppercase">test version</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-5 custom-scroll space-y-8">
+                <section>
+                    <p class="text-[10px] text-slate-500 font-bold uppercase mb-3 px-1">Construction</p>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="setTool('select')" id="btn-select" class="tool-btn flex flex-col items-center p-3 rounded-xl border border-slate-800 hover:bg-slate-800 transition-all">
+                            <i class="ph ph-cursor text-xl"></i>
+                            <span class="text-[9px] font-bold mt-1 uppercase">Inspect</span>
+                        </button>
+                        <button onclick="setTool('eraser')" id="btn-eraser" class="tool-btn flex flex-col items-center p-3 rounded-xl border border-slate-800 hover:bg-slate-800 transition-all">
+                            <i class="ph ph-trash text-xl"></i>
+                            <span class="text-[9px] font-bold mt-1 uppercase">Erase</span>
+                        </button>
+                        <button onclick="setTool('land')" id="btn-land" class="tool-btn col-span-2 flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-800 hover:bg-slate-800 transition-all">
+                            <i class="ph ph-bounding-box text-xl"></i>
+                            <span class="text-[10px] font-bold uppercase">Define Land Mass</span>
+                        </button>
+                        <button onclick="setTool('berth')" id="btn-berth" class="tool-btn col-span-2 flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-800 hover:bg-slate-800 transition-all">
+                            <i class="ph ph-rectangle text-xl"></i>
+                            <span class="text-[10px] font-bold uppercase">Define Berth</span>
+                        </button>
+                    </div>
+                </section>
+
+                <section>
+                    <p class="text-[10px] text-slate-500 font-bold uppercase mb-3 px-1">Vessel Operations</p>
+                    <button onclick="openVesselFleetModal()" class="w-full flex items-center gap-3 px-4 py-4 rounded-xl bg-emerald-600/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-600/20 transition-all mb-2">
+                        <i class="ph ph-ship text-xl"></i>
+                        <span class="text-[10px] font-black uppercase">Hull Profile Registry</span>
+                    </button>
+                </section>
+            </div>
+
+            <div class="p-5 border-t border-slate-800 space-y-2">
+                <button onclick="exportSpatialModel()" class="w-full flex items-center justify-center gap-2 py-4 bg-sky-600 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-lg shadow-sky-900/30 hover:bg-sky-500 transition-all">
+                    <i class="ph-bold ph-download-simple"></i> Export Dataset
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Display -->
+        <main class="flex-1 flex flex-col relative overflow-hidden">
+            <header class="h-16 glass flex items-center justify-between px-10 z-10 border-b border-slate-800">
+                <div class="flex items-center gap-8">
+                    <div id="status-tag" class="text-[9px] px-3 py-1.5 rounded-full bg-slate-900 text-slate-400 border border-slate-800 font-black tracking-widest uppercase">Select Tool</div>
+                </div>
+                <div class="flex items-center gap-8 text-[11px] font-bold text-slate-400">
+                    <span id="coord-display" class="font-mono">X: 0.00 M | Y: 0.00 M</span>
+                    <div class="flex items-center gap-3 bg-slate-900/80 px-4 py-2 rounded-xl border border-slate-800">
+                        <span class="text-[9px] text-slate-500">METER SCALE</span>
+                        <input id="scaleInput" type="number" step="0.1" value="1.0" onchange="updateScale()" class="w-14 bg-transparent text-sky-400 outline-none font-black">
+                    </div>
+                </div>
+            </header>
+
+            <div id="canvas-wrapper" class="flex-1 grid-bg p-12 overflow-hidden relative">
+                <svg id="viewport" viewBox="0 0 2400 1200" class="w-full h-full rounded-[2.5rem] shadow-2xl border border-slate-800/40"
+                     onmousedown="onMouseDown(event)" onmousemove="onMouseMove(event)" onmouseup="onMouseUp(event)">
+                    <g id="layer-land"></g>
+                    <g id="layer-berth"></g>
+                    <g id="layer-vessel"></g>
+                    <g id="layer-crane"></g>
+                    <g id="layer-ui"></g>
+                    <rect id="selection-preview" class="hidden fill-sky-500/5 stroke-sky-500 stroke-1" stroke-dasharray="6,4" />
+                </svg>
+
+                <!-- Configuration Modal -->
+                <div id="modal" class="hidden absolute glass rounded-3xl w-[560px] shadow-2xl z-50 overflow-hidden" style="top: 40px; left: 340px;">
+                    <div id="modal-drag-handle" class="p-5 flex justify-between items-center cursor-move border-b border-slate-800 bg-slate-900/60">
+                        <h3 id="modal-title" class="text-[11px] font-black uppercase tracking-[0.2em] text-sky-400">Object Info</h3>
+                        <button onclick="closeModal()" class="text-slate-500 hover:text-white transition-colors"><i class="ph-bold ph-x text-lg"></i></button>
+                    </div>
+                    <div id="modal-content" class="p-6 max-h-[70vh] overflow-y-auto custom-scroll space-y-1"></div>
+                    <div id="modal-footer" class="p-5 bg-slate-900/80 border-t border-slate-800 flex gap-3">
+                        <button id="modal-delete-btn" class="hidden px-5 py-3 rounded-xl bg-red-500/10 text-red-500 border border-red-500/20 text-[10px] font-black uppercase hover:bg-red-500/20">Delete</button>
+                        <button id="modal-apply-btn" onclick="applySettings()" class="flex-1 py-4 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-[11px] font-black uppercase tracking-widest transition-all">Save Parameters</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let state = {
+            tool: 'select',
+            scale: 1.0,
+            topology: { berths: [], land: [], cranes: [], vessels: [] },
+            fleet: [
+                { id: 'v1', name: 'Maersk Triple-E', loa: 399, beam: 59, draft: 16 },
+                { id: 'v2', name: 'MSC Oscar Class', loa: 395, beam: 59, draft: 16 },
+                { id: 'v3', name: 'Panamax Feeder', loa: 294, beam: 32, draft: 12 }
+            ]
+        };
+
+        let active = { isDown: false, start: {x:0, y:0}, target: null, draggingModal: false, modalOffset: {x:0, y:0} };
+
+        const svg = document.getElementById('viewport');
+        const modal = document.getElementById('modal');
+
+        document.getElementById('modal-drag-handle').onmousedown = (e) => {
+            if(e.target.closest('button')) return;
+            active.draggingModal = true;
+            active.modalOffset = { x: e.clientX - modal.offsetLeft, y: e.clientY - modal.offsetTop };
+        };
+        
+        window.onmousemove = (e) => {
+            if(active.draggingModal) {
+                modal.style.left = (e.clientX - active.modalOffset.x) + 'px';
+                modal.style.top = (e.clientY - active.modalOffset.y) + 'px';
+                return;
+            }
+            if (active.isDown) onMouseMove(e);
+        };
+
+        window.onmouseup = () => { 
+            active.draggingModal = false; 
+            if (active.isDown) onMouseUp();
+        };
+
+        function getSVGPoint(e) {
+            const pt = svg.createSVGPoint();
+            pt.x = e.clientX; pt.y = e.clientY;
+            return pt.matrixTransform(svg.getScreenCTM().inverse());
+        }
+
+        function setTool(t) {
+            state.tool = t;
+            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('tool-active'));
+            const targetBtn = document.getElementById('btn-' + t);
+            if (targetBtn) targetBtn.classList.add('tool-active');
+            document.getElementById('status-tag').innerText = "MODE: " + t.toUpperCase();
+        }
+
+        function onMouseDown(e) {
+            if (e.button !== 0) return;
+            const pos = getSVGPoint(e);
+            active.isDown = true;
+            active.start = pos;
+            if (state.tool !== 'select') {
+                const preview = document.getElementById('selection-preview');
+                preview.classList.remove('hidden');
+                preview.setAttribute('x', active.start.x);
+                preview.setAttribute('y', active.start.y);
+                preview.setAttribute('width', 0); preview.setAttribute('height', 0);
+            }
+        }
+
+        function onMouseMove(e) {
+            const pos = getSVGPoint(e);
+            document.getElementById('coord-display').innerText = `X: ${(pos.x * state.scale).toFixed(2)} M | Y: ${(pos.y * state.scale).toFixed(2)} M`;
+            if (!active.isDown) return;
+
+            if (state.tool === 'select' && active.target && active.target.obj) {
+                active.target.obj.x = pos.x - active.target.offX;
+                active.target.obj.y = pos.y - active.target.offY;
+                render();
+            } else if (state.tool !== 'select') {
+                const preview = document.getElementById('selection-preview');
+                preview.setAttribute('x', Math.min(active.start.x, pos.x));
+                preview.setAttribute('y', Math.min(active.start.y, pos.y));
+                preview.setAttribute('width', Math.abs(pos.x - active.start.x));
+                preview.setAttribute('height', Math.abs(pos.y - active.start.y));
+            }
+        }
+
+        function onMouseUp() {
+            if (!active.isDown) return;
+            const preview = document.getElementById('selection-preview');
+            const w = parseFloat(preview.getAttribute('width'));
+            const h = parseFloat(preview.getAttribute('height'));
+            const x = parseFloat(preview.getAttribute('x'));
+            const y = parseFloat(preview.getAttribute('y'));
+
+            if (state.tool !== 'select' && w > 10 && h > 10) {
+                const id = Date.now();
+                if (state.tool === 'land') {
+                    state.topology.land.push({ 
+                        id, x, y, w, h, 
+                        zoneName: `ZONE-${state.topology.land.length+1}`
+                    });
+                }
+                if (state.tool === 'berth') {
+                    state.topology.berths.push({ 
+                        id, x, y, w, h, name: `BERTH-${state.topology.berths.length + 1}`,
+                        fenderType: null, bollardCap: null, shorePower: false, maxDraft: null, apronWidth: null
+                    });
+                }
+            }
+            active.isDown = false;
+            preview.classList.add('hidden');
+            render();
+        }
+
+        function render() {
+            ['layer-land', 'layer-berth', 'layer-crane', 'layer-vessel', 'layer-ui'].forEach(l => document.getElementById(l).innerHTML = '');
+            state.topology.land.forEach(obj => drawShape(obj, 'land', 'land-draw', 'layer-land'));
+            state.topology.berths.forEach(obj => drawShape(obj, 'berth', 'berth-draw', 'layer-berth'));
+            state.topology.vessels.forEach(obj => drawShape(obj, 'vessel', 'vessel-draw', 'layer-vessel'));
+            state.topology.cranes.forEach(obj => drawCrane(obj));
+        }
+
+        function drawShape(obj, type, cls, layerId) {
+            const el = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+            el.setAttribute('x', obj.x); el.setAttribute('y', obj.y); el.setAttribute('width', obj.w); el.setAttribute('height', obj.h);
+            el.setAttribute('class', `${cls} ${active.target?.obj === obj ? 'selected' : ''}`);
+            el.setAttribute('rx', type === 'vessel' ? 40 : 4);
+            el.onmousedown = (e) => {
+                e.stopPropagation();
+                if (state.tool === 'eraser') {
+                    const key = type === 'land' ? 'land' : type + 's';
+                    state.topology[key] = state.topology[key].filter(o => o.id !== obj.id);
+                    render(); return;
+                }
+                if (state.tool === 'select') {
+                    active.isDown = true;
+                    active.target = { type, obj, offX: getSVGPoint(e).x - obj.x, offY: getSVGPoint(e).y - obj.y };
+                    openObjectModal(type, obj);
+                    render();
+                }
+            };
+            document.getElementById(layerId).appendChild(el);
+            
+            const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            label.setAttribute('x', obj.x + 10); label.setAttribute('y', obj.y + 20);
+            label.setAttribute('class', 'fill-slate-400 font-black text-[10px] uppercase pointer-events-none');
+            label.textContent = (type === 'berth' ? obj.name : (type === 'land' ? obj.zoneName : obj.vesselName));
+            document.getElementById('layer-ui').appendChild(label);
+        }
+
+        function drawCrane(obj) {
+            const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+            const base = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+            const w = 24, h = 30;
+            base.setAttribute('x', obj.x - w/2); base.setAttribute('y', obj.y - h/2);
+            base.setAttribute('width', w); base.setAttribute('height', h);
+            base.setAttribute('class', `crane-sts ${active.target?.obj === obj ? 'selected' : ''}`);
+            base.setAttribute('rx', 4);
+            
+            g.appendChild(base);
+            g.onmousedown = (e) => {
+                e.stopPropagation();
+                if (state.tool === 'eraser') {
+                    state.topology.cranes = state.topology.cranes.filter(o => o.id !== obj.id);
+                    render(); return;
+                }
+                active.isDown = true;
+                active.target = { type: 'crane', obj, offX: getSVGPoint(e).x - obj.x, offY: getSVGPoint(e).y - obj.y };
+                openObjectModal('crane', obj);
+                render();
+            };
+            document.getElementById('layer-crane').appendChild(g);
+        }
+
+        function uiInput(label, id, val, type = 'number') {
+            return `<div class="input-group"><label>${label}</label><input id="inp-${id}" type="${type}" step="0.1" value="${val !== null ? val : ''}" placeholder="None" class="input-field"></div>`;
+        }
+
+        function uiCheckbox(label, id, checked) {
+            return `<div class="flex items-center gap-2 pt-2">
+                <input id="inp-${id}" type="checkbox" ${checked ? 'checked' : ''} class="w-4 h-4 rounded bg-slate-900 border-slate-700">
+                <label for="inp-${id}" class="text-[9px] font-black uppercase text-slate-400">${label}</label>
+            </div>`;
+        }
+
+        function openObjectModal(type, obj) {
+            const content = document.getElementById('modal-content');
+            document.getElementById('modal-title').innerText = `${type.toUpperCase()} CONFIG`;
+            document.getElementById('modal-delete-btn').classList.remove('hidden');
+            document.getElementById('modal-apply-btn').classList.remove('hidden');
+            document.getElementById('modal-delete-btn').onclick = () => {
+                const key = type === 'land' ? 'land' : type + 's';
+                state.topology[key] = state.topology[key].filter(o => o.id !== obj.id);
+                closeModal();
+            };
+
+            let html = `<div class="grid grid-cols-2 gap-4 pb-4">
+                ${uiInput('Pos X (m)', 'x', (obj.x * state.scale).toFixed(1))}
+                ${uiInput('Pos Y (m)', 'y', (obj.y * state.scale).toFixed(1))}
+            </div>`;
+
+            if (type === 'land') {
+                html += `<div class="section-header">Spatial Boundary</div>
+                <div class="grid grid-cols-2 gap-4">
+                    ${uiInput('Width (m)', 'w', (obj.w * state.scale).toFixed(1))}
+                    ${uiInput('Height (m)', 'h', (obj.h * state.scale).toFixed(1))}
+                </div>
+                <div class="section-header">Operational Data</div>
+                ${uiInput('Zone Identifier', 'zoneName', obj.zoneName, 'text')}
+                <div class="pt-6 border-t border-slate-800 mt-6">
+                    <button onclick="addAttached('crane')" class="w-full py-4 bg-amber-500/10 text-amber-500 border border-amber-500/20 rounded-xl text-[10px] font-black uppercase hover:bg-amber-500/20">Install STS Crane</button>
+                </div>`;
+            } else if (type === 'berth') {
+                html += `<div class="section-header">Structure Profile</div>
+                ${uiInput('Berth ID', 'name', obj.name, 'text')}
+                <div class="grid grid-cols-2 gap-4 mt-4">
+                    ${uiInput('Length (m)', 'w', (obj.w * state.scale).toFixed(1))}
+                    ${uiInput('Width (m)', 'h', (obj.h * state.scale).toFixed(1))}
+                </div>
+                <div class="section-header">Berthing Specs</div>
+                <div class="grid grid-cols-2 gap-4">
+                    ${uiInput('Fender Type', 'fenderType', obj.fenderType || '', 'text')}
+                    ${uiInput('Bollard Cap (T)', 'bollardCap', obj.bollardCap)}
+                    ${uiInput('Max Draft (m)', 'maxDraft', obj.maxDraft)}
+                    ${uiInput('Apron Width (m)', 'apronWidth', obj.apronWidth)}
+                </div>
+                ${uiCheckbox('Shore Power Available', 'shorePower', obj.shorePower)}`;
+            } else if (type === 'vessel') {
+                html += `<div class="section-header">Instance Particulars</div>
+                ${uiInput('Vessel Name', 'vesselName', obj.vesselName, 'text')}
+                <div class="grid grid-cols-2 gap-4 mt-4">
+                    ${uiInput('Current LOA (m)', 'w', (obj.w * state.scale).toFixed(1))}
+                    ${uiInput('Current Beam (m)', 'h', (obj.h * state.scale).toFixed(1))}
+                </div>`;
+            } else if (type === 'crane') {
+                html += `<div class="section-header">Outreach & Geometry</div>
+                <div class="grid grid-cols-2 gap-4">
+                    ${uiInput('Outreach (m)', 'outreach', obj.outreach || 70)}
+                    ${uiInput('Backreach (m)', 'backreach', obj.backreach)}
+                    ${uiInput('Rail Gauge (m)', 'railGauge', obj.railGauge || 30.48)}
+                    ${uiInput('Lift Height (m)', 'liftHeight', obj.liftHeight)}
+                </div>
+                <div class="section-header">Performance Specs</div>
+                <div class="grid grid-cols-2 gap-4">
+                    ${uiInput('Lift Capacity (T)', 'liftCap', obj.liftCap || 65)}
+                    ${uiInput('Hoist Speed (m/s)', 'hoistSpeed', obj.hoistSpeed)}
+                    ${uiInput('Trolley Speed (m/s)', 'trolleySpeed', obj.trolleySpeed)}
+                    ${uiInput('Power Supply (kV)', 'powerSupply', obj.powerSupply)}
+                </div>
+                <div class="section-header">Control System</div>
+                ${uiInput('Automation Level', 'autoLevel', obj.autoLevel || '', 'text')}`;
+            }
+
+            content.innerHTML = html;
+            modal.classList.remove('hidden');
+        }
+
+        function applySettings() {
+            if (!active.target || !active.target.obj) return;
+            const o = active.target.obj;
+            o.x = parseFloat(document.getElementById('inp-x').value) / state.scale;
+            o.y = parseFloat(document.getElementById('inp-y').value) / state.scale;
+            
+            if (active.target.type !== 'crane') {
+                o.w = parseFloat(document.getElementById('inp-w').value) / state.scale;
+                o.h = parseFloat(document.getElementById('inp-h').value) / state.scale;
+            }
+
+            if (active.target.type === 'land') {
+                o.zoneName = document.getElementById('inp-zoneName').value;
+            }
+            if (active.target.type === 'berth') {
+                o.name = document.getElementById('inp-name').value;
+                o.fenderType = document.getElementById('inp-fenderType').value || null;
+                o.bollardCap = document.getElementById('inp-bollardCap').value ? parseFloat(document.getElementById('inp-bollardCap').value) : null;
+                o.maxDraft = document.getElementById('inp-maxDraft').value ? parseFloat(document.getElementById('inp-maxDraft').value) : null;
+                o.apronWidth = document.getElementById('inp-apronWidth').value ? parseFloat(document.getElementById('inp-apronWidth').value) : null;
+                o.shorePower = document.getElementById('inp-shorePower').checked;
+            }
+            if (active.target.type === 'vessel') {
+                o.vesselName = document.getElementById('inp-vesselName').value;
+            }
+            if (active.target.type === 'crane') {
+                o.outreach = parseFloat(document.getElementById('inp-outreach').value) || null;
+                o.backreach = document.getElementById('inp-backreach').value ? parseFloat(document.getElementById('inp-backreach').value) : null;
+                o.railGauge = document.getElementById('inp-railGauge').value ? parseFloat(document.getElementById('inp-railGauge').value) : null;
+                o.liftHeight = document.getElementById('inp-liftHeight').value ? parseFloat(document.getElementById('inp-liftHeight').value) : null;
+                o.liftCap = parseFloat(document.getElementById('inp-liftCap').value) || null;
+                o.hoistSpeed = document.getElementById('inp-hoistSpeed').value ? parseFloat(document.getElementById('inp-hoistSpeed').value) : null;
+                o.trolleySpeed = document.getElementById('inp-trolleySpeed').value ? parseFloat(document.getElementById('inp-trolleySpeed').value) : null;
+                o.powerSupply = document.getElementById('inp-powerSupply').value ? parseFloat(document.getElementById('inp-powerSupply').value) : null;
+                o.autoLevel = document.getElementById('inp-autoLevel').value || null;
+            }
+            
+            render(); closeModal();
+        }
+
+        function addAttached(type) {
+            if (active.target && active.target.obj && type === 'crane') {
+                const p = active.target.obj;
+                state.topology.cranes.push({ 
+                    id: Date.now(), x: p.x + p.w/2, y: p.y + p.h/2, 
+                    outreach: 70, liftCap: 65, railGauge: 30.48, 
+                    backreach: null, liftHeight: null, hoistSpeed: null, trolleySpeed: null, powerSupply: null, autoLevel: null 
+                });
+                render();
+            }
+        }
+
+        function openVesselFleetModal() {
+            const content = document.getElementById('modal-content');
+            document.getElementById('modal-title').innerText = `HULL REGISTRY`;
+            document.getElementById('modal-delete-btn').classList.add('hidden');
+            document.getElementById('modal-apply-btn').classList.add('hidden');
+
+            let html = `
+                <div class="space-y-4">
+                    <p class="text-[9px] text-slate-500 font-bold uppercase mb-4">Master Vessel Database (Available Hull Profiles)</p>
+                    <div class="space-y-2 mb-6">
+                        ${state.fleet.map(v => `
+                            <div class="flex items-center justify-between p-4 bg-slate-900/50 border border-slate-800 rounded-2xl group hover:border-emerald-500/40 transition-all">
+                                <div>
+                                    <div class="text-[11px] font-black uppercase text-white">${v.name}</div>
+                                    <div class="text-[9px] text-slate-500 uppercase">${v.loa}m LOA x ${v.beam}m Beam • ${v.draft}m Draft</div>
+                                </div>
+                                <div class="flex gap-2">
+                                    <button onclick="removeHullFromRegistry('${v.id}')" class="p-2 text-slate-500 hover:text-red-400"><i class="ph ph-trash"></i></button>
+                                    <button onclick="deployVessel('${v.id}')" class="px-4 py-2 bg-emerald-600 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-emerald-500 transition-all">Place on Map</button>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    
+                    <div class="section-header">Register New Hull Class</div>
+                    <div class="grid grid-cols-2 gap-4">
+                        ${uiInput('Vessel Name', 'new-name', '', 'text')}
+                        ${uiInput('LOA (m)', 'new-loa', 0)}
+                        ${uiInput('Beam (m)', 'new-beam', 0)}
+                        ${uiInput('Safe Draft (m)', 'new-draft', 0)}
+                    </div>
+                    <button onclick="addVesselToFleet()" class="w-full mt-4 py-4 bg-slate-800 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-700 transition-all">Add to Registry</button>
+                </div>
+            `;
+
+            content.innerHTML = html;
+            modal.classList.remove('hidden');
+        }
+
+        function removeHullFromRegistry(vid) {
+            state.fleet = state.fleet.filter(f => f.id !== vid);
+            openVesselFleetModal();
+        }
+
+        function addVesselToFleet() {
+            const name = document.getElementById('inp-new-name').value;
+            const loa = parseFloat(document.getElementById('inp-new-loa').value);
+            const beam = parseFloat(document.getElementById('inp-new-beam').value);
+            const draft = parseFloat(document.getElementById('inp-new-draft').value);
+
+            if (!name || loa <= 0) return;
+
+            state.fleet.push({ id: 'v-' + Date.now(), name, loa, beam, draft });
+            openVesselFleetModal();
+        }
+
+        function deployVessel(vid) {
+            const profile = state.fleet.find(f => f.id === vid);
+            if (!profile) return;
+
+            state.topology.vessels.push({
+                id: Date.now(),
+                vesselName: profile.name,
+                x: 100, y: 100,
+                w: profile.loa / state.scale,
+                h: profile.beam / state.scale,
+                draft: profile.draft
+            });
+
+            closeModal();
+            render();
+            setTool('select');
+        }
+
+        function exportSpatialModel() {
+            const calculateSpatial = (item) => {
+                const s = state.scale;
+                const width = (item.w || 24) * s;
+                const height = (item.h || 30) * s;
+                const x = item.x * s;
+                const y = item.y * s;
+                
+                return {
+                    covered_area_sqm: parseFloat((width * height).toFixed(2)),
+                    centroid: { x: parseFloat(x.toFixed(2)), y: parseFloat(y.toFixed(2)) }
+                };
+            };
+
+            const data = {
+                metadata: { project: "Spatial Export", timestamp: new Date().toISOString() },
+                infrastructure: {
+                    land_zones: state.topology.land.map(l => ({ ...l, spatial_geometry: calculateSpatial(l) })),
+                    berth_structures: state.topology.berths.map(b => ({ ...b, spatial_geometry: calculateSpatial(b) })),
+                    vessels: state.topology.vessels.map(v => ({ ...v, spatial_geometry: calculateSpatial(v) })),
+                    cranes: state.topology.cranes.map(c => ({ ...c, spatial_geometry: calculateSpatial(c) }))
+                },
+                hull_registry: state.fleet
+            };
+
+            const b = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a'); a.href = URL.createObjectURL(b); 
+            a.download = `Spatial_Data_${Date.now()}.json`; a.click();
+        }
+
+        function updateScale() { state.scale = parseFloat(document.getElementById('scaleInput').value) || 1.0; render(); }
+        function closeModal() { modal.classList.add('hidden'); active.target = null; render(); }
+        window.onload = () => { render(); setTool('select'); };
+    </script>
+</body>
+</html>
