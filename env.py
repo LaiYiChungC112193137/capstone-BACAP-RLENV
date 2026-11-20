@@ -10,19 +10,17 @@ import matplotlib.animation as animation
 from matplotlib.patches import Rectangle, FancyBboxPatch
 from typing import Optional, Tuple, Dict, Any, List
 
+
 class EnvironmentCMDPStability(gym.Env):
     """
     SECTION: Environment Initialization and Configuration
-    Initializes the quayside operations environment under a Constrained Markov Decision Process (CMDP) framework.
-    Defines discrete and continuous action spaces, observation space dimensions, Ornstein-Uhlenbeck stochastic drift 
-    parameters for environmental factors (wind, waves, visibility, precipitation, water velocity), harmonic tide 
-    constants, and physical quay limits.
+    Initializes the quayside operations environment under a Constrained Markov Decision Process (CMDP) framework
+    aligned with the BACAP system specification.
     """
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
 
     def __init__(self, dictionary_configuration: Optional[Dict[str, Any]] = None):
         super().__init__()
-        # Mathematical / Algorithmic Calculation: Configuration dictionary parsing and default parameter assignment.
         self.dictionary_configuration = dictionary_configuration or {}
         self.quay_length: float = self.dictionary_configuration.get("quay_length", 1200.0)
         self.crane_count: int = self.dictionary_configuration.get("crane_count", 10)
@@ -33,35 +31,31 @@ class EnvironmentCMDPStability(gym.Env):
         self.vessel_count_start: int = self.dictionary_configuration.get("initial_vessel_count", 5)
         self.allocation_limit: float = self.dictionary_configuration.get("allocation_limit", 6)
         self.gamma: float = self.dictionary_configuration.get("gamma", 0.99)
-        
-        # Action space definition: Dict space encompassing vessel index selection, berth fraction continuous placement,
-        # crane allocation count, and continuous ballast adjustment rate.
+
         self.action_space = spaces.Dict({
             "vessel_idx": spaces.Discrete(int(self.queue_capacity)),
             "berth_fraction": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
             "crane_count": spaces.Discrete(int(self.allocation_limit)),
             "ballast_rate": spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
         })
-        
-        # Observation dimension calculation: (queue_capacity * 11 features per vessel) + (crane_count * 6 features per crane) + 12 environmental telemetry features.
+
         observation_dimension = (int(self.queue_capacity) * 11) + (int(self.crane_count) * 6) + 12
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(observation_dimension,), dtype=np.float32
         )
-        
-        # Ornstein-Uhlenbeck parameters: Mean reversion rate (theta), long-term mean (mu), and volatility (sigma) for 
-        # [Wind Speed, Wave Height, Visibility, Precipitation, Water Velocity].
+
+        # Spec OU parameters: [Wind Speed, Wave Height, Visibility, Precipitation, Water Velocity]
         self.ou_theta = np.array([0.15, 0.10, 0.08, 0.12, 0.10], dtype=np.float64)
         self.ou_mu = np.array([6.5, 0.9, 14.0, 0.15, 0.5], dtype=np.float64)
         self.ou_sigma = np.array([1.4, 0.18, 0.5, 0.04, 0.05], dtype=np.float64)
-        
-        # Stochastic volatility parameters and correlation structures for expanded 10-dimensional SDE
+
+        # Retained configuration attributes for compatibility
         self.vol_theta = np.array([0.1, 0.1, 0.1, 0.1, 0.1], dtype=np.float64)
         self.vol_mu = np.array([0.5, 0.1, 1.0, 0.05, 0.05], dtype=np.float64)
         self.vol_sigma_volatility = np.array([0.05, 0.01, 0.05, 0.01, 0.01], dtype=np.float64)
         self.full_correlation_matrix = np.eye(10, dtype=np.float64)
 
-        # Environmental correlation matrix governing cross-dependencies between meteorological and oceanographic factors.
+        # Environmental correlation matrix C and covariance Sigma = diag(sigma) @ C @ diag(sigma)
         self.correlation_matrix = np.array([
             [1.00,  0.75, -0.40,  0.30,  0.20],
             [0.75,  1.00, -0.50,  0.25,  0.35],
@@ -69,11 +63,9 @@ class EnvironmentCMDPStability(gym.Env):
             [0.30,  0.25, -0.30,  1.00,  0.05],
             [0.20,  0.35, -0.10,  0.05,  1.00]
         ], dtype=np.float64)
-        
-        # Covariance matrix calculation: Outer product of sigmas scaled by correlation matrix.
-        covariance_matrix = np.outer(self.ou_sigma, self.ou_sigma) * self.correlation_matrix
+
+        covariance_matrix = np.diag(self.ou_sigma) @ self.correlation_matrix @ np.diag(self.ou_sigma)
         try:
-            # Cholesky decomposition: Factorizes covariance matrix $\boldsymbol{\Sigma} = \mathbf{L}\mathbf{L}^T$ for correlated Wiener process generation.
             self.cholesky_matrix = np.linalg.cholesky(covariance_matrix)
         except np.linalg.LinAlgError:
             self.cholesky_matrix = np.diag(self.ou_sigma)
@@ -83,16 +75,13 @@ class EnvironmentCMDPStability(gym.Env):
     def reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
         SECTION: Environment State Reset
-        Resets temporal simulation clocks, vessel queue/berth/finish tracking lists, baseline environmental parameters 
-        (wind, wave, visibility, precipitation, water velocity), and initializes crane positions along the quay.
         """
         super().reset(seed=seed)
         self.clock_time: float = 0.0
         self.vessels_queue: List[Dict[str, Any]] = []
         self.vessels_berth: List[Dict[str, Any]] = []
         self.vessels_finish: List[Dict[str, Any]] = []
-        
-        # Baseline environmental initializations
+
         self.speed_wind: float = 5.0
         self.direction_wind: float = 90.0
         self.height_wave: float = 0.5
@@ -101,14 +90,14 @@ class EnvironmentCMDPStability(gym.Env):
         self.precipitation: float = 0.0
         self.temperature: float = 24.0
         self.velocity_water: float = 0.4
-        
-        # Crane initial state tensor allocation [position, status, assigned_vessel_id, target_pos, unused, operational_hours, velocity]
+
+        # Crane state: [position, status, assigned_vessel_id, target_pos, unused, operational_hours, velocity]
         self.cranes = np.zeros((int(self.crane_count), 7), dtype=np.float32)
         for crane_index in range(int(self.crane_count)):
             self.cranes[crane_index, 0] = crane_index * (self.quay_length / self.crane_count)
             self.cranes[crane_index, 1] = 0.0
             self.cranes[crane_index, 2] = -1.0
-            self.cranes[crane_index, 3] = 100.0
+            self.cranes[crane_index, 3] = self.cranes[crane_index, 0]
             self.cranes[crane_index, 4] = 0.0
             self.cranes[crane_index, 5] = 0.0
             self.cranes[crane_index, 6] = 0.0
@@ -119,62 +108,45 @@ class EnvironmentCMDPStability(gym.Env):
     def _calculate_tide(self, time_parameter: float) -> float:
         """
         SECTION: Harmonic Tide Modeling
-        Computes sea water elevation at any simulation clock time using constituent harmonic components (M2, S2, M4).
+        H_tide(t) = A_M2 * cos(omega_M2 * t) + A_S2 * cos(omega_S2 * t) + A_M4 * cos(omega_M4 * t)
         """
         omega_m2 = 2.0 * np.pi / 12.4206
         omega_s2 = 2.0 * np.pi / 12.0000
         omega_m4 = 4.0 * np.pi / 12.4206
-        return 2.8 * np.cos(omega_m2 * time_parameter) + 1.2 * np.cos(omega_s2 * time_parameter) + 0.3 * np.cos(omega_m4 * time_parameter)
+        return (
+            2.8 * np.cos(omega_m2 * time_parameter)
+            + 1.2 * np.cos(omega_s2 * time_parameter)
+            + 0.3 * np.cos(omega_m4 * time_parameter)
+        )
 
     def _update_physics(self):
         """
-        SECTION: Stochastic Environmental Physics Update with State-Dependent Diffusion
-        Advances environmental state variables and dynamic volatilities through coupled SDEs,
-        incorporating state-dependent diffusion ($b'(x) \neq 0$) for exact Milstein correction.
+        SECTION: Stochastic Environmental Physics Update
+        X_{t+dt} = X_t + theta * (mu - X_t) * dt + L * dW + 0.1 * (dW^2 - dt)
         """
         dt = self.dt
-        dW_raw = np.random.normal(0, np.sqrt(dt), size=10)
-        
-        full_sigma = np.concatenate([self.ou_sigma, self.vol_sigma_volatility])
-        full_cov = np.outer(full_sigma, full_sigma) * self.full_correlation_matrix
-        try:
-            full_cholesky = np.linalg.cholesky(full_cov)
-        except np.linalg.LinAlgError:
-            full_cholesky = np.diag(full_sigma)
-            
-        dW_full = full_cholesky @ dW_raw
-        dW_x = dW_full[:5]
-        dW_sig = dW_full[5:]
+        dW_raw = np.random.normal(0.0, np.sqrt(dt), size=5)
+        dW = self.cholesky_matrix @ dW_raw
 
         environment_state = np.array([
             self.speed_wind, self.height_wave, self.visibility, self.precipitation, self.velocity_water
         ], dtype=np.float64)
-        
-        vol_drift = self.vol_theta * (self.vol_mu - self.ou_sigma) * dt
-        vol_diffusion = dW_sig
-        self.ou_sigma = np.clip(self.ou_sigma + vol_drift + vol_diffusion, 0.01, 5.0)
 
         drift = self.ou_theta * (self.ou_mu - environment_state) * dt
-        
-        # State-dependent diffusion: b(x) = sigma * x, giving b'(x) = sigma != 0
-        b_x = self.ou_sigma * environment_state
-        diffusion = b_x * dW_x
-        
-        # Rigorous Milstein correction term: 0.5 * b(x) * b'(x) * (dW^2 - dt)
-        milstein_correction = 0.5 * b_x * self.ou_sigma * (dW_x**2 - dt)
+        diffusion = dW
+        milstein_term = 0.1 * ((dW ** 2) - dt)
 
-        updated_environment = environment_state + drift + diffusion + milstein_correction
-        
-        self.speed_wind = max(0.0, updated_environment[0])
-        self.height_wave = max(0.1, updated_environment[1])
-        self.visibility = np.clip(updated_environment[2], 0.1, 25.0)
-        self.precipitation = max(0.0, updated_environment[3])
-        self.velocity_water = max(0.0, updated_environment[4])
+        updated_environment = environment_state + drift + diffusion + milstein_term
+
+        self.speed_wind = float(max(0.0, updated_environment[0]))
+        self.height_wave = float(max(0.1, updated_environment[1]))
+        self.visibility = float(np.clip(updated_environment[2], 0.1, 25.0))
+        self.precipitation = float(max(0.0, updated_environment[3]))
+        self.velocity_water = float(max(0.0, updated_environment[4]))
 
     def _generate_arrivals(self, origin_indicator: bool = False):
         """
         SECTION: Vessel Arrival Generation
-        Generates incoming vessels into the arrival queue using a Poisson distribution intensity scaled by time step dt.
         """
         arrival_intensity = 0.45 * self.dt
         origin_count = self.vessel_count_start if origin_indicator else np.random.poisson(arrival_intensity)
@@ -206,21 +178,43 @@ class EnvironmentCMDPStability(gym.Env):
                 "ballast": vessel_ballast
             })
 
+    def _assign_cranes_to_vessel(self, vessel_id: int, target_x: float, requested_count: int):
+        """
+        Assigns available cranes to a berthed vessel and sets their target position.
+        """
+        assigned = 0
+        for crane_index in range(int(self.crane_count)):
+            if assigned >= requested_count:
+                break
+            if self.cranes[crane_index, 2] == -1.0:
+                self.cranes[crane_index, 2] = float(vessel_id)
+                self.cranes[crane_index, 3] = float(target_x)
+                assigned += 1
+
+    def _release_cranes_from_vessel(self, vessel_id: int):
+        """
+        Releases cranes assigned to a completed vessel.
+        """
+        for crane_index in range(int(self.crane_count)):
+            if int(self.cranes[crane_index, 2]) == int(vessel_id):
+                self.cranes[crane_index, 2] = -1.0
+                self.cranes[crane_index, 3] = self.cranes[crane_index, 0]
+
     def _enforce_kinematics(self):
         """
         SECTION: Crane Kinematics and Collision Avoidance
-        Enforces physical velocity and acceleration limits, frictional damping, and strict minimum distance separation constraints.
         """
         velocity_limit = 45.0
         acceleration_limit = 15.0
         friction_coefficient = 0.02
         for crane_index in range(int(self.crane_count)):
             position_target = self.cranes[crane_index, 0]
-            if self.cranes[crane_index, 2] != -1:
+            if self.cranes[crane_index, 2] != -1.0:
                 vessel_identifier = int(self.cranes[crane_index, 2])
                 for vessel_item in self.vessels_berth:
                     if vessel_item["id"] == vessel_identifier:
                         position_target = vessel_item["coordinate"] + (vessel_item["length"] / 2.0)
+                        self.cranes[crane_index, 3] = position_target
                         break
             position_error = position_target - self.cranes[crane_index, 0]
             velocity_target = np.clip(position_error * 2.0, -velocity_limit, velocity_limit)
@@ -229,7 +223,7 @@ class EnvironmentCMDPStability(gym.Env):
             self.cranes[crane_index, 6] += acceleration * self.dt
             self.cranes[crane_index, 0] += self.cranes[crane_index, 6] * self.dt
         self.cranes[:, 0] = np.clip(self.cranes[:, 0], 0.0, self.quay_length)
-        
+
         iteration_limit = 50
         tolerance = 1e-4
         for _ in range(iteration_limit):
@@ -256,7 +250,6 @@ class EnvironmentCMDPStability(gym.Env):
     def _get_action_masks(self) -> Dict[str, np.ndarray]:
         """
         SECTION: Action Masking
-        Generates validity masks for discrete vessel queue selections.
         """
         mask_vessel = np.zeros(int(self.queue_capacity), dtype=np.float32)
         if len(self.vessels_queue) > 0:
@@ -268,7 +261,6 @@ class EnvironmentCMDPStability(gym.Env):
     def step(self, action: Dict[str, Any]) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
         SECTION: Environment Step Execution
-        Advances simulation steps, processing agent actions and constraint evaluations.
         """
         self._update_physics()
         storm_lock_flag = (self.height_wave > 2.8) or (self.visibility < 0.4) or (self.speed_wind > 18.5)
@@ -277,11 +269,11 @@ class EnvironmentCMDPStability(gym.Env):
         vessel_index = int(action["vessel_idx"])
         berth_fraction = float(action["berth_fraction"][0])
         cranes_count = int(action["crane_count"]) + 1
-        ballast_rate = float(action["ballast_rate"][0])
-        
+        ballast_rate = float(np.clip(action["ballast_rate"][0], -1.0, 1.0))
+
         all_active_vessels = self.vessels_queue + self.vessels_berth
         potential_before = -sum([(v["move_balance"] / max(1.0, v["move_sum"])) for v in all_active_vessels])
-        
+
         constraint_cost = 0.0
         berth_success_flag = False
         berth_failure_flag = False
@@ -291,6 +283,7 @@ class EnvironmentCMDPStability(gym.Env):
         if len(self.vessels_queue) > 0:
             if storm_lock_flag:
                 berth_failure_flag = True
+                constraint_cost += 0.5
             else:
                 if vessel_index >= len(self.vessels_queue):
                     vessel_index = len(self.vessels_queue) - 1
@@ -303,14 +296,23 @@ class EnvironmentCMDPStability(gym.Env):
                 draft_limit = tide + chart_datum
                 coordinate_permission_flag = (coordinate + vessel_item["length"] <= self.quay_length) and (coordinate >= 0.0)
                 draft_permission_flag = (vessel_item["draft"] <= draft_limit + keel_clearance)
-                overlap_permission_flag = all((coordinate + vessel_item["length"] <= vessel_berth_item["coordinate"]) or (coordinate >= vessel_berth_item["coordinate"] + vessel_berth_item["length"]) for vessel_berth_item in self.vessels_berth)
-                
+                overlap_permission_flag = all(
+                    (coordinate + vessel_item["length"] <= vessel_berth_item["coordinate"])
+                    or (coordinate >= vessel_berth_item["coordinate"] + vessel_berth_item["length"])
+                    for vessel_berth_item in self.vessels_berth
+                )
+
                 if coordinate_permission_flag and draft_permission_flag and overlap_permission_flag:
                     vessel_item["coordinate"] = coordinate
                     vessel_item["time_berth"] = self.clock_time
                     vessel_item["allocated_cranes"] = cranes_count
                     self.vessels_queue.pop(vessel_index)
                     self.vessels_berth.append(vessel_item)
+                    self._assign_cranes_to_vessel(
+                        vessel_item["id"],
+                        coordinate + (vessel_item["length"] / 2.0),
+                        cranes_count
+                    )
                     berth_success_flag = True
                     vessel_berthed_weight = vessel_item["weight_priority"] / 3.0
                 else:
@@ -318,7 +320,7 @@ class EnvironmentCMDPStability(gym.Env):
                     constraint_cost += 1.0
 
         self.clock_time += self.dt
-        
+
         wind_multiplier = 0.0 if crane_lockdown_flag else max(0.0, 1.0 - 0.06 * max(0.0, self.speed_wind - 10.0))
         rain_multiplier = max(0.1, 1.0 - 0.15 * self.precipitation)
         visibility_multiplier = min(1.0, self.visibility / 5.0)
@@ -326,9 +328,13 @@ class EnvironmentCMDPStability(gym.Env):
         environment_multiplier = wind_multiplier * rain_multiplier * visibility_multiplier * berth_congestion_factor
 
         for crane_index in range(int(self.crane_count)):
-            self.cranes[crane_index, 1] = 3.0 if crane_lockdown_flag else (1.0 if self.cranes[crane_index, 2] != -1 else 0.0)
-            if self.cranes[crane_index, 1] == 1.0:
+            if crane_lockdown_flag:
+                self.cranes[crane_index, 1] = 3.0
+            elif self.cranes[crane_index, 2] != -1.0:
+                self.cranes[crane_index, 1] = 1.0
                 self.cranes[crane_index, 5] += 12.5 * self.dt
+            else:
+                self.cranes[crane_index, 1] = 0.0
 
         self._enforce_kinematics()
 
@@ -338,26 +344,26 @@ class EnvironmentCMDPStability(gym.Env):
             crane_allocation_count = vessel_item.get("allocated_cranes", 2)
             rate_operation = crane_allocation_count * environment_multiplier * (1.0 - 0.07 * max(0, crane_allocation_count - 2))
             vessel_item["move_balance"] -= rate_operation * self.dt
-            
+
             cargo_mass_delta = rate_operation * 15.0 * self.dt
             vessel_item["mass"] -= cargo_mass_delta
             vessel_item["kg"] += 0.001 * rate_operation * self.dt
-            
+
             ballast_delta = ballast_rate * 50.0 * self.dt
-            vessel_item["ballast"] = np.clip(vessel_item["ballast"] + ballast_delta, 500.0, 5000.0)
-            
+            vessel_item["ballast"] = float(np.clip(vessel_item["ballast"] + ballast_delta, 500.0, 5000.0))
+
             displacement_volume = vessel_item["mass"] / 1.025
             metacentric_radius = 4.5 * (vessel_item["length"] / 300.0)
             keel_to_metacenter = 5.0 + metacentric_radius
             free_surface_correction = 0.2 * (vessel_item["ballast"] / 3000.0)
             vessel_item["gm"] = keel_to_metacenter - vessel_item["kg"] - free_surface_correction
-            
+
             heeling_moment = (ballast_delta * 12.0) + (cargo_mass_delta * 4.0)
-            vessel_item["heel"] = np.clip(heeling_moment / max(0.5, vessel_item["gm"]), -15.0, 15.0)
-            
+            vessel_item["heel"] = float(np.clip(heeling_moment / max(0.5, vessel_item["gm"]), -15.0, 15.0))
+
             gm_violation = max(0.0, 0.5 - vessel_item["gm"])
             heel_violation = max(0.0, abs(vessel_item["heel"]) - 5.0)
-            
+
             if gm_violation > 0.0:
                 constraint_cost += 0.2
             if heel_violation > 0.0:
@@ -367,21 +373,22 @@ class EnvironmentCMDPStability(gym.Env):
                 tardiness = max(0.0, self.clock_time - vessel_item["date_due"])
                 finished_tardiness_list.append((tardiness, vessel_item["weight_priority"]))
                 vessels_finish.append(vessel_item)
-                
+
         for vessel_finish_item in vessels_finish:
+            self._release_cranes_from_vessel(vessel_finish_item["id"])
             self.vessels_berth.remove(vessel_finish_item)
             self.vessels_finish.append(vessel_finish_item)
 
         all_active_vessels_after = self.vessels_queue + self.vessels_berth
         potential_after = -sum([(v["move_balance"] / max(1.0, v["move_sum"])) for v in all_active_vessels_after])
-        
+
         alpha_1, alpha_2, alpha_3 = 0.1, 0.3, 0.6
-        
+
         queue_ratio = queue_count / float(self.queue_capacity)
-        reward_queue = - (queue_ratio ** 2) - 0.05 * max(0.0, queue_ratio - 0.5)
-        
-        reward_berth = (2.0 if berth_success_flag else 0.0) * vessel_berthed_weight - (0.5 if berth_failure_flag else 0.0)
-        
+        reward_queue = -(queue_ratio ** 2) - 0.05 * max(0.0, queue_ratio - 0.5)
+
+        reward_berth = ((2.0 if berth_success_flag else 0.0) - (0.5 if berth_failure_flag else 0.0)) * vessel_berthed_weight
+
         reward_completion = 0.0
         for tardiness, priority in finished_tardiness_list:
             p_weight = priority / 3.0
@@ -404,7 +411,6 @@ class EnvironmentCMDPStability(gym.Env):
     def _get_observation(self) -> np.ndarray:
         """
         SECTION: Observation Space Vector Construction
-        Flattens and normalizes entity feature representations.
         """
         observation_list = []
         for index_value in range(int(self.queue_capacity)):
@@ -420,7 +426,7 @@ class EnvironmentCMDPStability(gym.Env):
                 ])
             else:
                 observation_list.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-                
+
         for crane_index in range(int(self.crane_count)):
             observation_list.extend([
                 self.cranes[crane_index, 0] / self.quay_length,
@@ -430,7 +436,7 @@ class EnvironmentCMDPStability(gym.Env):
                 self.cranes[crane_index, 4] / 60.0,
                 self.cranes[crane_index, 5] / 2000.0
             ])
-            
+
         observation_list.extend([
             self.clock_time / self.simulation_duration,
             self._calculate_tide(self.clock_time) / 6.0,
@@ -447,10 +453,10 @@ class EnvironmentCMDPStability(gym.Env):
         ])
         return np.array(observation_list, dtype=np.float32)
 
+
 class NetworkActorCriticCMDP(nn.Module):
     """
-    SECTION: Transformer-Based Actor-Critic Neural Network Architecture
-    Implements multi-head attention mechanisms over heterogeneous entity embeddings.
+    SECTION: Transformer-Based Actor-Critic Neural Network Architecture (Preserved Out-of-Scope Component)
     """
     def __init__(self, state_dimension: int, dictionary_configuration: Optional[Dict[str, Any]] = None):
         super().__init__()
@@ -466,29 +472,29 @@ class NetworkActorCriticCMDP(nn.Module):
         self.vessel_projection = nn.Linear(self.vessel_feat_dim, model_dimension)
         self.crane_projection = nn.Linear(self.crane_feat_dim, model_dimension)
         self.environment_projection = nn.Linear(self.env_feat_dim, model_dimension)
-        
+
         self.graph_attention = nn.MultiheadAttention(embed_dim=model_dimension, num_heads=heads_count, batch_first=True)
         self.cross_attention_layer = nn.MultiheadAttention(embed_dim=model_dimension, num_heads=heads_count, batch_first=True)
         self.layer_normalization_one = nn.LayerNorm(model_dimension)
-        
+
         self.discrete_action_embedding = nn.Embedding(self.max_vessels, model_dimension)
         self.crane_action_embedding = nn.Embedding(int(self.dictionary_configuration.get("allocation_limit", 6)), model_dimension)
-        
+
         self.fusion_fully_connected_one = nn.Linear(model_dimension * 3 + model_dimension + model_dimension * 2, 512)
         self.fusion_layer_normalization_one = nn.LayerNorm(512)
         self.fusion_fully_connected_two = nn.Linear(512, 512)
         self.fusion_layer_normalization_two = nn.LayerNorm(512)
-        
+
         self.actor_vessel_layer = nn.Linear(512, self.max_vessels)
         self.actor_berth_mean_layer = nn.Linear(512 + model_dimension, 1)
         self.actor_berth_scale_layer = nn.Linear(512 + model_dimension, 1)
         self.actor_crane_layer = nn.Linear(512, int(self.dictionary_configuration.get("allocation_limit", 6)))
         self.actor_ballast_mean_layer = nn.Linear(512 + model_dimension, 1)
         self.actor_ballast_scale_layer = nn.Linear(512 + model_dimension, 1)
-        
+
         self.critic_layer = nn.Linear(512, 1)
         self.cost_critic_layer = nn.Linear(512, 1)
-        
+
         self._initialize_weights()
 
     def _initialize_weights(self):
@@ -502,11 +508,11 @@ class NetworkActorCriticCMDP(nn.Module):
         batch_size = state_tensor.size(0)
         v_end = self.max_vessels * self.vessel_feat_dim
         c_end = v_end + (self.num_cranes * self.crane_feat_dim)
-        
+
         vessels_raw = state_tensor[:, :v_end].view(batch_size, self.max_vessels, self.vessel_feat_dim)
         cranes_raw = state_tensor[:, v_end:c_end].view(batch_size, self.num_cranes, self.crane_feat_dim)
         env_raw = state_tensor[:, c_end:]
-        
+
         vessel_presence_mask = (vessels_raw[:, :, -1] > 0.0)
         crane_padding_mask = torch.ones((batch_size, self.num_cranes), dtype=torch.bool, device=state_tensor.device)
         key_padding_mask = ~torch.cat([vessel_presence_mask, crane_padding_mask], dim=1)
@@ -514,20 +520,20 @@ class NetworkActorCriticCMDP(nn.Module):
         v_emb = self.vessel_projection(vessels_raw)
         c_emb = self.crane_projection(cranes_raw)
         e_emb = self.environment_projection(env_raw)
-        
+
         entities = torch.cat([v_emb, c_emb], dim=1)
         entity_valid_mask = torch.cat([vessel_presence_mask, crane_padding_mask], dim=1).float().unsqueeze(-1)
         entities = entities * entity_valid_mask
-        
+
         attention_output, _ = self.graph_attention(entities, entities, entities, key_padding_mask=key_padding_mask)
         entities = self.layer_normalization_one(entities + attention_output * entity_valid_mask)
-        
+
         entity_sum = (entities * entity_valid_mask).sum(dim=1)
         entity_count = entity_valid_mask.sum(dim=1).clamp(min=1.0)
         entity_pooled = entity_sum / entity_count
-        
+
         entity_max = (entities * entity_valid_mask + (1.0 - entity_valid_mask) * -1e9).max(dim=1).values
-        
+
         cross_attended_query = e_emb.unsqueeze(1)
         cross_attended_output, _ = self.cross_attention_layer(
             query=cross_attended_query,
@@ -536,7 +542,7 @@ class NetworkActorCriticCMDP(nn.Module):
             key_padding_mask=key_padding_mask
         )
         cross_attended_environment = cross_attended_output.squeeze(1)
-        
+
         if sampled_vessel is None:
             sampled_vessel = torch.zeros(batch_size, dtype=torch.long, device=state_tensor.device)
         else:
@@ -547,36 +553,37 @@ class NetworkActorCriticCMDP(nn.Module):
         else:
             max_crane_idx = int(self.dictionary_configuration.get("allocation_limit", 6)) - 1
             sampled_crane = torch.clamp(sampled_crane, min=0, max=max_crane_idx)
-            
+
         vessel_action_embedded = self.discrete_action_embedding(sampled_vessel)
         crane_action_embedded = self.crane_action_embedding(sampled_crane)
-        
+
         combined = torch.cat([entity_pooled, entity_max, e_emb, cross_attended_environment, vessel_action_embedded, crane_action_embedded], dim=1)
         hidden_layer_one = F.tanh(self.fusion_layer_normalization_one(self.fusion_fully_connected_one(combined)))
         hidden_layer_two = F.tanh(self.fusion_layer_normalization_two(self.fusion_fully_connected_two(hidden_layer_one) + hidden_layer_one))
-        
+
         vessel_logits = self.actor_vessel_layer(hidden_layer_two)
         if mask_vessel is not None:
             vessel_logits = vessel_logits + (1.0 - mask_vessel) * -1e9
-            
+
         conditional_berth_input = torch.cat([hidden_layer_two, vessel_action_embedded], dim=1)
         berth_mean = self.actor_berth_mean_layer(conditional_berth_input)
         berth_scale = F.softplus(self.actor_berth_scale_layer(conditional_berth_input)) + 1e-4
-        
+
         crane_logits = self.actor_crane_layer(hidden_layer_two)
-        
+
         conditional_ballast_input = torch.cat([hidden_layer_two, crane_action_embedded], dim=1)
         ballast_mean = self.actor_ballast_mean_layer(conditional_ballast_input)
         ballast_scale = F.softplus(self.actor_ballast_scale_layer(conditional_ballast_input)) + 1e-4
-        
+
         value_tensor = self.critic_layer(hidden_layer_two)
         cost_value_tensor = self.cost_critic_layer(hidden_layer_two)
-        
+
         return vessel_logits, berth_mean, berth_scale, crane_logits, ballast_mean, ballast_scale, value_tensor, cost_value_tensor
+
 
 class AgentPPOCMDP:
     """
-    SECTION: PPO Agent with Lagrangian Constraint Optimization
+    SECTION: PPO Agent with Lagrangian Constraint Optimization (Preserved Out-of-Scope Component)
     """
     def __init__(self, state_dimension: int, dictionary_configuration: Optional[Dict[str, Any]] = None):
         self.dictionary_configuration = dictionary_configuration or {}
@@ -586,10 +593,10 @@ class AgentPPOCMDP:
         self.gamma = float(self.dictionary_configuration.get("gamma", 0.99))
         self.gae_lambda = float(self.dictionary_configuration.get("gae_lambda", 0.95))
         self.clip_eps = float(self.dictionary_configuration.get("clip_eps", 0.2))
-        
+
         self.lagrangian_multiplier = 0.1
         self.cost_limit = 0.05
-        
+
         self.states = []
         self.actions = []
         self.masks = []
@@ -603,33 +610,33 @@ class AgentPPOCMDP:
     def select_action(self, observation_array: np.ndarray, action_mask: Dict[str, np.ndarray]) -> Tuple[Dict[str, Any], torch.Tensor, torch.Tensor, torch.Tensor]:
         state_tensor = torch.FloatTensor(observation_array).unsqueeze(0)
         mask_tensor = torch.FloatTensor(action_mask["vessel_mask"]).unsqueeze(0)
-        
+
         with torch.no_grad():
             v_log, _, _, _, _, _, _, _ = self.model(state_tensor, mask_vessel=mask_tensor)
             v_dist = torch.distributions.Categorical(logits=v_log)
             v_act = v_dist.sample()
-            
+
             c_log, _, _, _, _, _, _, _ = self.model(state_tensor, mask_vessel=mask_tensor, sampled_vessel=v_act)
             c_dist = torch.distributions.Categorical(logits=c_log)
             c_act = c_dist.sample()
-            
+
             _, b_mean, b_scale, _, ball_mean, ball_scale, value_tensor, cost_value_tensor = self.model(state_tensor, mask_vessel=mask_tensor, sampled_vessel=v_act, sampled_crane=c_act)
-            
+
             v_prob = v_dist.log_prob(v_act)
             c_prob = c_dist.log_prob(c_act)
-            
+
             b_dist = torch.distributions.Normal(b_mean, b_scale)
             b_raw = b_dist.sample()
             b_act = torch.sigmoid(b_raw)
             b_prob = b_dist.log_prob(b_raw).sum(dim=-1) - torch.log(b_act * (1.0 - b_act) + 1e-6).sum(dim=-1)
-            
+
             ball_dist = torch.distributions.Normal(ball_mean, ball_scale)
             ball_raw = ball_dist.sample()
             ball_act = torch.sigmoid(ball_raw)
             ball_prob = ball_dist.log_prob(ball_raw).sum(dim=-1) - torch.log(ball_act * (1.0 - ball_act) + 1e-6).sum(dim=-1)
-            
+
             log_probability_total = v_prob + b_prob + c_prob + ball_prob
-            
+
         action_dictionary = {
             "vessel_idx": v_act.item(),
             "berth_fraction": b_act.cpu().numpy().flatten(),
@@ -653,11 +660,11 @@ class AgentPPOCMDP:
         states = torch.FloatTensor(np.array(self.states))
         masks = torch.FloatTensor(np.array(self.masks))
         b_vessels = torch.LongTensor([a["vessel_idx"] for a in self.actions])
-        
+
         b_berths = torch.FloatTensor(np.array([a["berth_fraction"] for a in self.actions]))
         b_cranes = torch.LongTensor([a["crane_count"] for a in self.actions])
         b_ballasts = torch.FloatTensor(np.array([(a["ballast_rate"] + 1.0) / 2.0 for a in self.actions]))
-        
+
         old_log_probs = torch.stack(self.log_probs).detach()
         rewards = self.rewards
         costs = self.costs
@@ -669,30 +676,30 @@ class AgentPPOCMDP:
             state_next_tensor = torch.FloatTensor(state_next).unsqueeze(0)
             mask_next_tensor = torch.FloatTensor(mask_next["vessel_mask"]).unsqueeze(0)
             _, _, _, _, _, _, next_value, next_cost_value = self.model(state_next_tensor, mask_vessel=mask_next_tensor)
-            
+
         advantages = torch.zeros_like(values)
         cost_advantages = torch.zeros_like(cost_values)
         last_gae_lam = 0.0
         last_cost_gae = 0.0
         values_extended = torch.cat([values, next_value.detach().view(-1)])
         cost_values_extended = torch.cat([cost_values, next_cost_value.detach().view(-1)])
-        
+
         for t in reversed(range(len(rewards))):
             non_terminal_flag = 1.0 - float(dones[t])
             delta = rewards[t] + self.gamma * values_extended[t + 1] * non_terminal_flag - values_extended[t]
             last_gae_lam = delta + self.gamma * self.gae_lambda * non_terminal_flag * last_gae_lam
             advantages[t] = last_gae_lam
-            
+
             cost_delta = costs[t] + self.gamma * cost_values_extended[t + 1] * non_terminal_flag - cost_values_extended[t]
             last_cost_gae = cost_delta + self.gamma * self.gae_lambda * non_terminal_flag * last_cost_gae
             cost_advantages[t] = last_cost_gae
 
         returns = advantages + values
         cost_returns = cost_advantages + cost_values
-        
+
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         cost_advantages = (cost_advantages - cost_advantages.mean()) / (cost_advantages.std() + 1e-8)
-        
+
         total_advantage = advantages
 
         entropy_coefficient = max(0.001, 0.05 * (1.0 - float(current_epoch) / float(max(1, max_epochs))))
@@ -718,36 +725,36 @@ class AgentPPOCMDP:
                 v_dist = torch.distributions.Categorical(logits=v_log)
                 new_v_lp = v_dist.log_prob(batch_vessels)
                 v_ent = v_dist.entropy().mean()
-                
+
                 c_log, _, _, _, _, _, _, _ = self.model(b_states, mask_vessel=b_batch_masks, sampled_vessel=batch_vessels)
                 c_dist = torch.distributions.Categorical(logits=c_log)
                 new_c_lp = c_dist.log_prob(batch_cranes)
                 c_ent = c_dist.entropy().mean()
-                
+
                 _, b_mean, b_scale, _, ball_mean, ball_scale, b_values, b_cost_values = self.model(b_states, mask_vessel=b_batch_masks, sampled_vessel=batch_vessels, sampled_crane=batch_cranes)
                 b_values = b_values.view(-1)
                 b_cost_values = b_cost_values.view(-1)
-                
+
                 b_dist = torch.distributions.Normal(b_mean, b_scale)
                 clamped_b = torch.logit(torch.clamp(batch_berths, min=1e-5, max=1.0 - 1e-5))
                 new_b_lp = b_dist.log_prob(clamped_b).sum(dim=-1) - torch.log(batch_berths * (1.0 - batch_berths) + 1e-6).sum(dim=-1)
                 b_ent = b_dist.entropy().mean()
-                
+
                 ball_dist = torch.distributions.Normal(ball_mean, ball_scale)
                 clamped_ball = torch.logit(torch.clamp(batch_ballasts, min=1e-5, max=1.0 - 1e-5))
                 new_ball_lp = ball_dist.log_prob(clamped_ball).sum(dim=-1) - torch.log(batch_ballasts * (1.0 - batch_ballasts) + 1e-6).sum(dim=-1)
                 ball_ent = ball_dist.entropy().mean()
-                
+
                 new_log_probs = new_v_lp + new_b_lp + new_c_lp + new_ball_lp
                 entropy = v_ent + b_ent + c_ent + ball_ent
 
                 ratios = torch.exp(new_log_probs - b_old_log_probs)
                 surr1 = ratios * b_advantages
                 surr2 = torch.clamp(ratios, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * b_advantages
-                
+
                 policy_loss = -torch.min(surr1, surr2).mean()
                 constraint_penalty = (self.lagrangian_multiplier * (ratios * b_cost_advantages)).mean()
-                
+
                 value_loss = F.mse_loss(b_values, b_returns)
                 cost_value_loss = F.mse_loss(b_cost_values, b_cost_returns)
                 loss = policy_loss + constraint_penalty + 0.5 * value_loss + 0.5 * cost_value_loss - entropy_coefficient * entropy
@@ -771,6 +778,7 @@ class AgentPPOCMDP:
         self.cost_values.clear()
         self.dones.clear()
 
+
 def execute_simulation():
     env_config = {
         "quay_length": 1200.0,
@@ -787,7 +795,7 @@ def execute_simulation():
     env = EnvironmentCMDPStability(env_config)
     agent = AgentPPOCMDP(env.observation_space.shape[0], env_config)
     episode_count = 15
-    
+
     for episode in range(episode_count):
         state, information = env.reset()
         done = False
@@ -807,7 +815,7 @@ def execute_simulation():
     state, information = env.reset()
     done = False
     trajectory_collection = []
-    
+
     while not done:
         action, _, _, _ = agent.select_action(state, information)
         state_next, reward, termination_indicator, truncation_indicator, information_next = env.step(action)
@@ -831,7 +839,7 @@ def execute_simulation():
 
     plt.style.use('dark_background')
     fig = plt.figure(figsize=(14, 11), facecolor='#030712')
-    
+
     axis_quay = plt.subplot2grid((3, 1), (0, 0), rowspan=1, colspan=1, fig=fig)
     axis_stability = plt.subplot2grid((3, 1), (1, 0), rowspan=1, colspan=1, fig=fig)
     axis_status = plt.subplot2grid((3, 1), (2, 0), rowspan=1, colspan=1, fig=fig)
@@ -868,16 +876,16 @@ def execute_simulation():
         axis_quay.set_xlim(0, env.quay_length)
         axis_quay.set_ylim(-5, 50)
         axis_quay.set_title("Quayside Operations Twin and Reward", fontsize=12, fontweight='bold', pad=8)
-        
+
         data = trajectory_collection[frame_index]
-        
+
         wave_x = np.linspace(0, env.quay_length, 200)
         wave_y = 2.0 * np.sin(wave_x * 0.02 + frame_index * 0.2) * (data["wave"] / 2.0)
         axis_quay.fill_between(wave_x, -5, wave_y, color='#0284c7', alpha=0.25)
         axis_quay.plot(wave_x, wave_y, color='#38bdf8', lw=1.0, alpha=0.5)
 
         axis_quay.plot([0, env.quay_length], [0, 0], color='#cbd5e1', lw=6, solid_capstyle='round')
-        
+
         for vessel_item in data["berthed"]:
             rect_glow = Rectangle((vessel_item["coordinate"], 3), vessel_item["length"], 18, facecolor='#1d4ed8', edgecolor='#60a5fa', alpha=0.4, lw=3, zorder=3)
             rect_core = Rectangle((vessel_item["coordinate"], 5), vessel_item["length"], 14, facecolor='#2563eb', edgecolor='#93c5fd', alpha=0.9, lw=1.5, zorder=4)
@@ -897,11 +905,11 @@ def execute_simulation():
         axis_stability.set_xlim(0, env.simulation_duration)
         axis_stability.set_ylim(-10, 10)
         axis_stability.set_title("Vessel GM and Heel Telemetry", fontsize=12, fontweight='bold', pad=8)
-        
+
         times = [t["time"] for t in trajectory_collection[:frame_index + 1]]
         gm_vals = [t["berthed"][0]["gm"] if len(t["berthed"]) > 0 else 0.0 for t in trajectory_collection[:frame_index + 1]]
         heel_vals = [t["berthed"][0]["heel"] if len(t["berthed"]) > 0 else 0.0 for t in trajectory_collection[:frame_index + 1]]
-        
+
         if len(times) > 0:
             axis_stability.plot(times, gm_vals, color='#38bdf8', lw=2, label='GM (m)')
             axis_stability.plot(times, heel_vals, color='#f43f5e', lw=2, label='Heel (°)')
@@ -917,6 +925,7 @@ def execute_simulation():
     animation_instance = animation.FuncAnimation(fig, animate, init_func=init, frames=len(trajectory_collection), interval=60, blit=False, repeat=True)
     plt.tight_layout(pad=3.0)
     plt.show()
+
 
 if __name__ == "__main__":
     execute_simulation()
